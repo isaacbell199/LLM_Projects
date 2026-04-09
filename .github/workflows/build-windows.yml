@@ -20,6 +20,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ÉTAPE INDISPENSABLE : Active les chemins longs pour les dépendances llama-cpp
+      - name: Enable long paths
+        run: |
+          git config --system core.longpaths true
+          reg add "HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\FileSystem" /v "LongPathsEnabled" /t REG_DWORD /d 1 /f
+
+      # ÉTAPE INDISPENSABLE : Prépare le compilateur MSVC pour llama-cpp-sys-2
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Setup Node.js 20
         uses: actions/setup-node@v4
         with:
@@ -35,26 +45,20 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Install Vulkan SDK (required for llama.cpp)
+      - name: Install Vulkan SDK
         shell: powershell
         run: |
           $installerUrl = "https://sdk.lunarg.com/sdk/download/latest/windows/vulkan-sdk.exe"
           $installerPath = "$env:TEMP\vulkan-sdk.exe"
-          
-          Write-Host "Downloading Vulkan SDK..."
           Invoke-WebRequest -Uri $installerUrl -OutFile $installerPath
-          
-          Write-Host "Installing Vulkan SDK silently..."
           Start-Process -FilePath $installerPath -ArgumentList "--accept-licenses --default-answer --confirm-command install" -NoNewWindow -Wait
-          
           $vulkanSdkPath = "C:\VulkanSDK"
           $latestVersion = (Get-ChildItem $vulkanSdkPath | Sort-Object -Descending | Select-Object -First 1).Name
           $vulkanPath = "$vulkanSdkPath\$latestVersion"
-          
-          Write-Host "Vulkan SDK installed at: $vulkanPath"
           echo "VULKAN_SDK=$vulkanPath" >> $env:GITHUB_ENV
           echo "$vulkanPath\Bin" >> $env:GITHUB_PATH
 
+      # MISE À JOUR : On change la clé du cache pour forcer un nettoyage propre
       - name: Cache Rust dependencies
         uses: actions/cache@v4
         with:
@@ -62,22 +66,14 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             src-tauri/target
-          key: ${{ runner.os }}-rust-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-rust-v2-${{ hashFiles('**/Cargo.toml') }}
           restore-keys: |
-            ${{ runner.os }}-rust-
-
-      - name: Cache Bun dependencies
-        uses: actions/cache@v4
-        with:
-          path: node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-rust-v2-
 
       - name: Install frontend dependencies
-        run: bun install --frozen-lockfile
+        run: bun install
 
-      - name: Build frontend (static export for Tauri)
+      - name: Build frontend
         run: bun run build
         env:
           NEXT_STATIC_EXPORT: "true"
@@ -91,76 +87,36 @@ jobs:
 
       - name: Get version from Cargo.toml
         id: get_version
+        shell: powershell
         run: |
           $version = (Get-Content src-tauri/Cargo.toml | Select-String 'version = "(.*)"').Matches.Groups[1].Value
           echo "VERSION=$version" >> $env:GITHUB_OUTPUT
 
-      - name: Upload MSI artifact
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: NexaStory-Windows-MSI-${{ steps.get_version.outputs.VERSION }}
-          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
-          retention-days: 30
-
-      - name: Upload NSIS installer artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: NexaStory-Windows-NSIS-${{ steps.get_version.outputs.VERSION }}
-          path: src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          name: NexaStory-Windows-${{ steps.get_version.outputs.VERSION }}
+          path: |
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi
+            src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
           retention-days: 30
 
   create-release:
     needs: build-windows
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
-      - name: Get version from tag
-        id: get_version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: NexaStory v${{ steps.get_version.outputs.VERSION }}
-          body: |
-            ## 🚀 NexaStory v${{ steps.get_version.outputs.VERSION }}
-
-            ### 📥 Downloads (Windows Only)
-
-            | File | Description |
-            |------|-------------|
-            | `NexaStory_*_x64.msi` | Windows Installer (recommended) |
-            | `NexaStory_*_x64-setup.exe` | NSIS Installer |
-
-            ### 💻 System Requirements
-
-            - **OS**: Windows 10/11 (64-bit)
-            - **RAM**: 8GB minimum (16GB recommended)
-            - **CPU**: AVX support required (AVX2 recommended)
-
-            ### ✨ Features
-
-            - 🤖 Local AI models (GGUF) - Complete privacy
-            - ⚡ Speculative Decoding (Duo Model)
-            - 🧠 CPU optimizations (AVX, AVX2, AVX-512, FMA)
-            - 💾 Smart memory management
-            - 📁 Portable data storage
-
-            ### 📝 Changelog
-
-            See [CHANGELOG.md](./CHANGELOG.md) for details.
-
+          name: NexaStory v${{ github.ref_name }}
           files: artifacts/**/*
           draft: false
-          prerelease: ${{ contains(steps.get_version.outputs.VERSION, '-beta') || contains(steps.get_version.outputs.VERSION, '-alpha') }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
