@@ -215,15 +215,16 @@ impl NativeModel {
     }
 
     /// Get or initialize the global shared backend
-    fn get_backend() -> Result<Arc<LlamaBackend>> {
-        GLOBAL_BACKEND
-            .get_or_try_init(|| {
-                log::info!("Initializing GLOBAL llama backend (only once)...");
-                LlamaBackend::init()
-                    .map(Arc::new)
-                    .map_err(|e| anyhow!("Failed to initialize llama backend: {:?}", e))
-            })
-            .map(Arc::clone)
+     fn get_backend() -> Result<Arc<LlamaBackend>> {
+        if let Some(backend) = GLOBAL_BACKEND.get() {
+            return Ok(Arc::clone(backend));
+        }
+        log::info!("Initializing GLOBAL llama backend (only once)...");
+        let backend = LlamaBackend::init()
+            .map_err(|e| anyhow!("Failed to initialize llama backend: {:?}", e))?;
+        let arc_backend = Arc::new(backend);
+        let _ = GLOBAL_BACKEND.set(Arc::clone(&arc_backend));
+        Ok(arc_backend)
     }
 
     pub fn load(&self, path: &str, n_ctx: i32, n_gpu_layers: i32, n_threads: usize) -> Result<()> {
@@ -269,7 +270,7 @@ impl NativeModel {
         log::info!("Attempting to load model with llama.cpp...");
 
         // Load model
-        let model = match LlamaModel::load_from_file(&**backend, &canonical_path, &model_params) {
+        let model = match LlamaModel::load_from_file(&backend, &canonical_path, &model_params) {
             Ok(m) => {
                 log::info!("Model loaded successfully into memory");
                 m
@@ -297,7 +298,7 @@ impl NativeModel {
         let model_ref: &'static LlamaModel = Box::leak(model_box);
 
         // Create context
-        let context = match model_ref.new_context(&**backend, context_params) {
+        let context = match model_ref.new_context(&backend, context_params) {
             Ok(c) => {
                 log::info!("Context created successfully");
                 c
@@ -428,16 +429,18 @@ impl NativeModel {
 
         // Create sampler chain with proper parameters to prevent repetition loops
         // Uses temperature, top_k, top_p, min_p, and repetition penalties from settings
-        let mut sampler = LlamaSampler::chain()
-            .add(LlamaSampler::temp(settings.temperature))
-            .add(LlamaSampler::top_k(settings.top_k as u32))
-            .add(LlamaSampler::top_p(settings.top_p, 1))
-            .add(LlamaSampler::min_p(settings.min_p, 1))
-            .add(LlamaSampler::penalties(
+        let samplers = vec![
+            LlamaSampler::temp(settings.temperature),
+            LlamaSampler::top_k(settings.top_k as i32),
+            LlamaSampler::top_p(settings.top_p, 1),
+            LlamaSampler::penalties(
+                64, // last_n_tokens
                 settings.repeat_penalty,
                 settings.frequency_penalty,
                 settings.presence_penalty,
-            ))
+            ),
+        ];
+        let mut sampler = LlamaSampler::chain(samplers, true);
             .build();
 
         log::info!("Sampler: temp={}, top_k={}, top_p={}, min_p={}, repeat_penalty={}",
@@ -619,11 +622,12 @@ impl NativeModel {
                     .ok_or_else(|| anyhow!("No draft context available"))?;
 
                 // Use the same sampler settings for draft model (higher temp for diversity)
-                let mut draft_sampler = LlamaSampler::chain()
-                    .add(LlamaSampler::temp(settings.temperature * 1.1)) // Slightly higher temp for draft
-                    .add(LlamaSampler::top_k(settings.top_k as u32))
-                    .add(LlamaSampler::top_p(settings.top_p, 1))
-                    .add(LlamaSampler::min_p(settings.min_p, 1))
+                let draft_samplers = vec![
+    LlamaSampler::temp(settings.temperature * 1.1), // Slightly higher temp for draft
+    LlamaSampler::top_k(settings.top_k as i32),
+    LlamaSampler::top_p(settings.top_p, 1),
+];
+let mut draft_sampler = LlamaSampler::chain(draft_samplers, true);
                     .build();
 
                 let mut speculative_tokens = Vec::with_capacity(n_draft);
@@ -672,16 +676,18 @@ impl NativeModel {
                     .ok_or_else(|| anyhow!("No main context available"))?;
 
                 // Use the preset sampler settings for main model verification
-                let mut main_sampler = LlamaSampler::chain()
-                    .add(LlamaSampler::temp(settings.temperature))
-                    .add(LlamaSampler::top_k(settings.top_k as u32))
-                    .add(LlamaSampler::top_p(settings.top_p, 1))
-                    .add(LlamaSampler::min_p(settings.min_p, 1))
-                    .add(LlamaSampler::penalties(
-                        settings.repeat_penalty,
-                        settings.frequency_penalty,
-                        settings.presence_penalty,
-                    ))
+                let main_samplers = vec![
+    LlamaSampler::temp(settings.temperature),
+    LlamaSampler::top_k(settings.top_k as i32),
+    LlamaSampler::top_p(settings.top_p, 1),
+    LlamaSampler::penalties(
+        64, 
+        settings.repeat_penalty,
+        settings.frequency_penalty,
+        settings.presence_penalty,
+    ),
+];
+let mut main_sampler = LlamaSampler::chain(main_samplers, true);
                     .build();
 
                 // Create batch with all speculative tokens
