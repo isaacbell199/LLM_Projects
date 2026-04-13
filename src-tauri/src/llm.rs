@@ -441,8 +441,7 @@ impl NativeModel {
             ),
         ];
         let mut sampler = LlamaSampler::chain(samplers, true);
-            .build();
-
+        
         log::info!("Sampler: temp={}, top_k={}, top_p={}, min_p={}, repeat_penalty={}",
             settings.temperature, settings.top_k, settings.top_p, settings.min_p, settings.repeat_penalty);
 
@@ -628,8 +627,7 @@ impl NativeModel {
     LlamaSampler::top_p(settings.top_p, 1),
 ];
 let mut draft_sampler = LlamaSampler::chain(draft_samplers, true);
-                    .build();
-
+                 
                 let mut speculative_tokens = Vec::with_capacity(n_draft);
                 let mut draft_batch = LlamaBatch::new(n_draft + 1, 0);
 
@@ -688,8 +686,7 @@ let mut draft_sampler = LlamaSampler::chain(draft_samplers, true);
     ),
 ];
 let mut main_sampler = LlamaSampler::chain(main_samplers, true);
-                    .build();
-
+               
                 // Create batch with all speculative tokens
                 let mut verify_batch = LlamaBatch::new(n_speculative + 1, 0);
                 for (i, &token) in draft_tokens.iter().enumerate() {
